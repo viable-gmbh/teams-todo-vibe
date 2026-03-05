@@ -64,10 +64,11 @@ export class OpenAiService {
   constructor(private readonly settingsService: SettingsService) {}
 
   async analyzeChatForTasks(
+    userId: string,
     chat: ChatPayloadForAi,
     existingTaskTitles: string[],
   ): Promise<ChatTaskExtractionResult> {
-    const apiKey = await this.settingsService.getOpenAiApiKey();
+    const apiKey = await this.settingsService.getOpenAiApiKey(userId);
     if (!apiKey) {
       return { tasks: [], skippedAsExisting: 0 };
     }
@@ -175,10 +176,11 @@ export class OpenAiService {
   }
 
   async analyzeReactionCandidateForTask(
+    userId: string,
     candidate: ReactionTaskCandidateInput,
     existingTaskTitles: string[],
   ): Promise<ExtractedChatTask | null> {
-    const apiKey = await this.settingsService.getOpenAiApiKey();
+    const apiKey = await this.settingsService.getOpenAiApiKey(userId);
     if (!apiKey) {
       return null;
     }

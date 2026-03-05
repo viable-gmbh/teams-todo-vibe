@@ -1,18 +1,21 @@
-import { Body, Controller, Get, Patch } from '@nestjs/common';
+import { Body, Controller, Get, Patch, UseGuards } from '@nestjs/common';
 import { SettingsService } from './settings.service';
 import { UpdateSettingsDto } from './dto/update-settings.dto';
+import { CurrentUserId } from '../auth/current-user-id.decorator';
+import { SessionAuthGuard } from '../auth/session-auth.guard';
 
+@UseGuards(SessionAuthGuard)
 @Controller('settings')
 export class SettingsController {
   constructor(private readonly settingsService: SettingsService) {}
 
   @Get()
-  getSettings() {
-    return this.settingsService.getSettings();
+  getSettings(@CurrentUserId() userId: string) {
+    return this.settingsService.getSettings(userId);
   }
 
   @Patch()
-  updateSettings(@Body() payload: UpdateSettingsDto) {
-    return this.settingsService.updateSettings(payload);
+  updateSettings(@CurrentUserId() userId: string, @Body() payload: UpdateSettingsDto) {
+    return this.settingsService.updateSettings(userId, payload);
   }
 }

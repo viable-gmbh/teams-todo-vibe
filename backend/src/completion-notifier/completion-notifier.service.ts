@@ -24,7 +24,7 @@ export class CompletionNotifierService {
     private readonly graphService: GraphService,
   ) {}
 
-  async pollAndNotifyCompletions(): Promise<CompletionPollSummary> {
+  async pollAndNotifyCompletions(userId: string): Promise<CompletionPollSummary> {
     if (this.running) {
       this.logger.warn('Skipping completion poll because previous run is still active.');
       return {
@@ -38,17 +38,25 @@ export class CompletionNotifierService {
     }
     this.running = true;
     try {
-      return await this.pollAndNotifyCompletionsInternal();
+      return await this.pollAndNotifyCompletionsInternal(userId);
     } finally {
       this.running = false;
     }
   }
 
-  private async pollAndNotifyCompletionsInternal(): Promise<CompletionPollSummary> {
+  async pollAndNotifyCompletionsForAllUsers(): Promise<void> {
+    const users = await this.prismaService.user.findMany({ select: { id: true } });
+    for (const user of users) {
+      await this.pollAndNotifyCompletions(user.id);
+    }
+  }
+
+  private async pollAndNotifyCompletionsInternal(userId: string): Promise<CompletionPollSummary> {
     const startedAt = new Date();
-    const replyMessages = await this.resolveReplyMessages();
+    const replyMessages = await this.resolveReplyMessages(userId);
     const candidates = await this.prismaService.task.findMany({
       where: {
+        userId,
         done: true,
         completionNotifiedAt: null,
         sourceType: TaskSourceType.AUTO_DETECTED,
@@ -68,7 +76,7 @@ export class CompletionNotifierService {
       const language = this.detectSourceLanguage(sourceText, task.sourceLanguage ?? undefined);
       const replyBody = this.buildReplyHtml(sourceText, language, replyMessages);
       try {
-        await this.graphService.sendReply(task.chatId, task.graphMessageId, replyBody);
+        await this.graphService.sendReply(userId, task.chatId, task.graphMessageId, replyBody);
         await this.prismaService.task.update({
           where: { id: task.id },
           data: {
@@ -145,8 +153,9 @@ export class CompletionNotifierService {
     return normalized.slice(0, 600);
   }
 
-  private async resolveReplyMessages(): Promise<{ de: string; en: string }> {
-    const settings = await this.prismaService.settings.findFirst({
+  private async resolveReplyMessages(userId: string): Promise<{ de: string; en: string }> {
+    const settings = await this.prismaService.settings.findUnique({
+      where: { userId },
       select: { completionReplyDe: true, completionReplyEn: true },
     });
     return {

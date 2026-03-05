@@ -20,6 +20,7 @@ export interface SyncRunSummary {
 }
 
 export interface ChatSyncJob {
+  userId: string;
   chatId: string;
   messageLimit: number;
 }
@@ -57,24 +58,41 @@ export class MessagesService {
     };
   }
 
+  async enqueueLatestChatsForAllUsers(
+    chatLimit?: number,
+    messageLimit?: number,
+  ): Promise<SyncEnqueueSummary> {
+    const users = await this.prismaService.user.findMany({ select: { id: true } });
+    let chatsQueued = 0;
+    let effectiveMessageLimit = Math.min(50, Math.max(1, messageLimit ?? this.pollMessageLimit));
+    for (const user of users) {
+      const summary = await this.enqueueLatestChats(user.id, chatLimit, messageLimit);
+      chatsQueued += summary.chatsQueued;
+      effectiveMessageLimit = summary.messageLimit;
+    }
+    return { chatsQueued, messageLimit: effectiveMessageLimit };
+  }
+
   async enqueueLatestChats(
+    userId: string,
     chatLimit?: number,
     messageLimit?: number,
   ): Promise<SyncEnqueueSummary> {
     const safeChatLimit = Math.min(25, Math.max(1, chatLimit ?? this.pollChatLimit));
     const safeMessageLimit = Math.min(50, Math.max(1, messageLimit ?? this.pollMessageLimit));
-    const chats = await this.graphService.listChats(safeChatLimit);
+    const chats = await this.graphService.listChats(userId, safeChatLimit);
 
     let queued = 0;
     for (const chat of chats) {
       await this.prismaService.chatAnalysisState.upsert({
-        where: { chatId: chat.id },
+        where: { userId_chatId: { userId, chatId: chat.id } },
         update: {
           status: 'QUEUED',
           messagesAnalyzed: 0,
           tasksFound: 0,
         },
         create: {
+          userId,
           chatId: chat.id,
           status: 'QUEUED',
           messagesAnalyzed: 0,
@@ -83,7 +101,7 @@ export class MessagesService {
       });
       await this.syncQueue.add(
         'sync-chat',
-        { chatId: chat.id, messageLimit: safeMessageLimit },
+        { userId, chatId: chat.id, messageLimit: safeMessageLimit },
         {
           attempts: 2,
           removeOnComplete: true,
@@ -103,14 +121,14 @@ export class MessagesService {
     try {
       this.logger.log(`Starting chat analysis chatId=${job.chatId} messageLimit=${job.messageLimit}`);
       await this.prismaService.chatAnalysisState.upsert({
-        where: { chatId: job.chatId },
+        where: { userId_chatId: { userId: job.userId, chatId: job.chatId } },
         update: { status: 'ANALYZING' },
-        create: { chatId: job.chatId, status: 'ANALYZING' },
+        create: { userId: job.userId, chatId: job.chatId, status: 'ANALYZING' },
       });
 
       let me: Awaited<ReturnType<GraphService['getCurrentUser']>>;
       try {
-        me = await this.graphService.getCurrentUser();
+        me = await this.graphService.getCurrentUser(job.userId);
       } catch (error) {
         this.logger.error(
           `Failed to load Graph current user chatId=${job.chatId}: ${this.describeError(error)}`,
@@ -120,12 +138,12 @@ export class MessagesService {
 
       const existingTaskTitles = (
         await this.prismaService.task.findMany({
-          where: { done: false },
+          where: { userId: job.userId, done: false },
           select: { text: true },
         })
       ).map((task) => task.text);
-      const configuredReactionEmoji = await this.resolveReactionEmoji();
-      const chatTitle = await this.resolveChatTitle(job.chatId);
+      const configuredReactionEmoji = await this.resolveReactionEmoji(job.userId);
+      const chatTitle = await this.resolveChatTitle(job.userId, job.chatId);
 
       const summary: SyncRunSummary = {
         chatsScanned: 1,
@@ -137,7 +155,7 @@ export class MessagesService {
 
       let messages: GraphChatMessage[];
       try {
-        messages = await this.graphService.listRecentMessages(job.chatId, job.messageLimit);
+        messages = await this.graphService.listRecentMessages(job.userId, job.chatId, job.messageLimit);
       } catch (error) {
         this.logger.error(
           `Failed to load Graph messages chatId=${job.chatId}: ${this.describeError(error)}`,
@@ -148,7 +166,7 @@ export class MessagesService {
       if (messages.length === 0) {
         this.logger.warn(`No recent messages returned chatId=${job.chatId}`);
         await this.prismaService.chatAnalysisState.upsert({
-          where: { chatId: job.chatId },
+          where: { userId_chatId: { userId: job.userId, chatId: job.chatId } },
           update: {
             status: 'NO_TASKS',
             lastAnalyzedAt: new Date(),
@@ -157,6 +175,7 @@ export class MessagesService {
             latestMessageAt: null,
           },
           create: {
+            userId: job.userId,
             chatId: job.chatId,
             status: 'NO_TASKS',
             lastAnalyzedAt: new Date(),
@@ -176,7 +195,8 @@ export class MessagesService {
       for (const message of messages) {
         await this.prismaService.incomingMessage.upsert({
           where: {
-            chatId_graphMessageId: {
+            userId_chatId_graphMessageId: {
+              userId: job.userId,
               chatId: job.chatId,
               graphMessageId: message.id,
             },
@@ -189,6 +209,7 @@ export class MessagesService {
             status: 'UNQUEUED',
           },
           create: {
+            userId: job.userId,
             graphMessageId: message.id,
             senderName: message.from?.user?.displayName ?? 'Unknown',
             senderEmail: message.from?.user?.email ?? null,
@@ -207,7 +228,7 @@ export class MessagesService {
           `No reaction candidates found chatId=${job.chatId} messagesScanned=${messages.length} reaction=${configuredReactionEmoji}`,
         );
         await this.prismaService.chatAnalysisState.upsert({
-          where: { chatId: job.chatId },
+          where: { userId_chatId: { userId: job.userId, chatId: job.chatId } },
           update: {
             status: 'NO_TASKS',
             lastAnalyzedAt: new Date(),
@@ -216,6 +237,7 @@ export class MessagesService {
             latestMessageAt,
           },
           create: {
+            userId: job.userId,
             chatId: job.chatId,
             status: 'NO_TASKS',
             lastAnalyzedAt: new Date(),
@@ -227,7 +249,7 @@ export class MessagesService {
         return summary;
       }
 
-      let nextSortOrder = await this.resolveNextSortOrder();
+      let nextSortOrder = await this.resolveNextSortOrder(job.userId);
       for (const candidateMessage of reactedMessages) {
         const targetIndex = messages.findIndex((message) => message.id === candidateMessage.id);
         if (targetIndex < 0) {
@@ -240,6 +262,7 @@ export class MessagesService {
         const aiPayload = this.toReactionAiPayload(job.chatId, messages, targetIndex, me);
         try {
           aiPayload.embeddedMessage = await this.resolveEmbeddedMessage(
+              job.userId,
             job.chatId,
             candidateMessage,
             messages,
@@ -256,6 +279,7 @@ export class MessagesService {
         let extraction: Awaited<ReturnType<OpenAiService['analyzeReactionCandidateForTask']>> = null;
         try {
           extraction = await this.openAiService.analyzeReactionCandidateForTask(
+            job.userId,
             aiPayload,
             existingTaskTitles,
           );
@@ -286,7 +310,8 @@ export class MessagesService {
         try {
           await this.prismaService.task.upsert({
             where: {
-              chatId_graphMessageId: {
+              userId_chatId_graphMessageId: {
+                userId: job.userId,
                 chatId: job.chatId,
                 graphMessageId: candidateMessage.id,
               },
@@ -305,6 +330,7 @@ export class MessagesService {
               fromSelf: this.isSelfMessage(candidateMessage, me),
             },
             create: {
+              userId: job.userId,
               text: taskText,
               description: source,
               sortOrder: nextSortOrder,
@@ -335,7 +361,7 @@ export class MessagesService {
       }
 
       await this.prismaService.chatAnalysisState.upsert({
-        where: { chatId: job.chatId },
+        where: { userId_chatId: { userId: job.userId, chatId: job.chatId } },
         update: {
           status: summary.taskCandidates > 0 ? 'TASKS_FOUND' : 'NO_TASKS',
           lastAnalyzedAt: new Date(),
@@ -344,6 +370,7 @@ export class MessagesService {
           latestMessageAt,
         },
         create: {
+          userId: job.userId,
           chatId: job.chatId,
           status: summary.taskCandidates > 0 ? 'TASKS_FOUND' : 'NO_TASKS',
           lastAnalyzedAt: new Date(),
@@ -361,13 +388,14 @@ export class MessagesService {
       );
       try {
         await this.prismaService.chatAnalysisState.upsert({
-          where: { chatId: job.chatId },
+          where: { userId_chatId: { userId: job.userId, chatId: job.chatId } },
           update: {
             status: 'NO_TASKS',
             lastAnalyzedAt: new Date(),
             tasksFound: 0,
           },
           create: {
+            userId: job.userId,
             chatId: job.chatId,
             status: 'NO_TASKS',
             lastAnalyzedAt: new Date(),
@@ -384,7 +412,7 @@ export class MessagesService {
       }
       throw error;
     } finally {
-      await this.clearAnalyzedMessagesFromLog(job.chatId, analyzedGraphMessageIds);
+      await this.clearAnalyzedMessagesFromLog(job.userId, job.chatId, analyzedGraphMessageIds);
     }
   }
 
@@ -535,6 +563,7 @@ export class MessagesService {
   }
 
   private async resolveEmbeddedMessage(
+    userId: string,
     chatId: string,
     targetMessage: GraphChatMessage,
     allMessages: GraphChatMessage[],
@@ -548,7 +577,7 @@ export class MessagesService {
     if (inWindow) {
       return this.toAiMessage(inWindow, me);
     }
-    const fetched = await this.graphService.getMessage(chatId, referencedId);
+    const fetched = await this.graphService.getMessage(userId, chatId, referencedId);
     if (!fetched) {
       return null;
     }
@@ -561,6 +590,7 @@ export class MessagesService {
   }
 
   private async clearAnalyzedMessagesFromLog(
+    userId: string,
     chatId: string,
     graphMessageIds: string[],
   ): Promise<void> {
@@ -569,6 +599,7 @@ export class MessagesService {
     }
     await this.prismaService.incomingMessage.deleteMany({
       where: {
+        userId,
         chatId,
         graphMessageId: { in: graphMessageIds },
       },
@@ -650,9 +681,9 @@ export class MessagesService {
     return score >= 2 ? 'de' : 'en';
   }
 
-  private async resolveChatTitle(chatId: string): Promise<string> {
+  private async resolveChatTitle(userId: string, chatId: string): Promise<string> {
     try {
-      const chat = await this.graphService.getChat(chatId);
+      const chat = await this.graphService.getChat(userId, chatId);
       const topic = chat?.topic?.trim();
       if (topic) {
         return topic;
@@ -663,8 +694,9 @@ export class MessagesService {
     return chatId;
   }
 
-  private async resolveReactionEmoji(): Promise<string> {
-    const settings = await this.prismaService.settings.findFirst({
+  private async resolveReactionEmoji(userId: string): Promise<string> {
+    const settings = await this.prismaService.settings.findUnique({
+      where: { userId },
       select: { reactionEmoji: true },
     });
     return settings?.reactionEmoji?.trim().toLowerCase() || this.defaultReactionEmoji;
@@ -708,8 +740,9 @@ export class MessagesService {
     return String(error);
   }
 
-  private async resolveNextSortOrder(): Promise<number> {
+  private async resolveNextSortOrder(userId: string): Promise<number> {
     const latest = await this.prismaService.task.findFirst({
+      where: { userId },
       orderBy: { sortOrder: 'desc' },
       select: { sortOrder: true },
     });

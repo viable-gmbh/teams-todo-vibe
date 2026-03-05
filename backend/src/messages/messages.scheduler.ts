@@ -12,7 +12,7 @@ export class MessagesScheduler {
   async enqueuePeriodicReactionSync(): Promise<void> {
     try {
       const { chatLimit, messageLimit } = this.messagesService.getPollingConfig();
-      const result = await this.messagesService.enqueueLatestChats(chatLimit, messageLimit);
+      const result = await this.messagesService.enqueueLatestChatsForAllUsers(chatLimit, messageLimit);
       this.logger.log(
         `Queued reaction sync for ${result.chatsQueued} chats (messageLimit=${result.messageLimit})`,
       );

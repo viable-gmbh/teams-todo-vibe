@@ -57,6 +57,7 @@ function App() {
   const incomingMessageChatsQuery = useQuery({
     queryKey: ['incoming-message-chats'],
     queryFn: async () => (await endpoints.incomingMessageChats()).data,
+    enabled: authQuery.data?.authenticated === true,
     refetchInterval: 2_000,
     refetchIntervalInBackground: true,
   });
@@ -64,10 +65,12 @@ function App() {
   const settingsQuery = useQuery({
     queryKey: ['settings'],
     queryFn: async () => (await endpoints.settings()).data,
+    enabled: authQuery.data?.authenticated === true,
   });
   const tasksQuery = useQuery({
     queryKey: ['tasks'],
     queryFn: async () => (await endpoints.tasks()).data,
+    enabled: authQuery.data?.authenticated === true,
     refetchInterval: 3_000,
     refetchIntervalInBackground: true,
   });
@@ -212,12 +215,40 @@ function App() {
     },
   });
   const connectUrl = `${import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000'}/auth/login`;
+  const isAuthenticated = authQuery.data?.authenticated === true;
 
   const tabs: Array<{ path: string; label: string }> = [
     { path: '/tasks', label: 'Tasks' },
     { path: '/dashboard', label: 'Message Log' },
     { path: '/settings', label: 'Settings' },
   ];
+
+  if (authQuery.isLoading) {
+    return (
+      <div className="mx-auto max-w-2xl p-6">
+        <div className="rounded-xl bg-white p-6 shadow-sm">Checking sign-in status...</div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated) {
+    return (
+      <div className="mx-auto max-w-2xl p-6">
+        <div className="rounded-xl bg-white p-6 shadow-sm">
+          <h1 className="text-2xl font-bold text-slate-900">DoneBetter</h1>
+          <p className="mt-2 text-sm text-slate-600">
+            Sign in with Microsoft first. Your data stays isolated to your account.
+          </p>
+          <a
+            href={connectUrl}
+            className="mt-4 inline-block rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white"
+          >
+            Connect Microsoft Account
+          </a>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="mx-auto max-w-7xl p-6">

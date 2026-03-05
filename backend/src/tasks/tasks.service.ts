@@ -71,11 +71,12 @@ export class TasksService {
     private readonly completionNotifierService: CompletionNotifierService,
   ) {}
 
-  async listTasks(query: TaskListQuery): Promise<TaskListItem[]> {
+  async listTasks(userId: string, query: TaskListQuery): Promise<TaskListItem[]> {
     const doneFilter = this.parseOptionalBoolean(query.done);
     const sourceFilter = this.parseSourceType(query.sourceType);
     const tasks = await this.prismaService.task.findMany({
       where: {
+        userId,
         ...(doneFilter === null ? {} : { done: doneFilter }),
         ...(sourceFilter ? { sourceType: sourceFilter } : {}),
       },
@@ -101,14 +102,15 @@ export class TasksService {
     }));
   }
 
-  async createCustomTask(input: CreateTaskInput): Promise<TaskListItem> {
+  async createCustomTask(userId: string, input: CreateTaskInput): Promise<TaskListItem> {
     const text = input.text?.trim() ?? '';
     if (text.length < 3) {
       throw new BadRequestException('Task text must be at least 3 characters long.');
     }
-    const nextSortOrder = await this.resolveNextSortOrder();
+    const nextSortOrder = await this.resolveNextSortOrder(userId);
     const task = await this.prismaService.task.create({
       data: {
+        userId,
         text,
         description: this.normalizeNullableString(input.description),
         sortOrder: nextSortOrder,
@@ -143,11 +145,11 @@ export class TasksService {
     };
   }
 
-  async updateTask(taskId: string, input: UpdateTaskInput): Promise<TaskListItem> {
+  async updateTask(userId: string, taskId: string, input: UpdateTaskInput): Promise<TaskListItem> {
     if (input.text !== undefined && input.text.trim().length < 3) {
       throw new BadRequestException('Task text must be at least 3 characters long.');
     }
-    const existing = await this.prismaService.task.findUnique({ where: { id: taskId } });
+    const existing = await this.prismaService.task.findFirst({ where: { id: taskId, userId } });
     if (!existing) {
       throw new BadRequestException('Task not found.');
     }
@@ -188,7 +190,11 @@ export class TasksService {
     };
   }
 
-  async setTaskDone(taskId: string, input: SetTaskDoneInput): Promise<TaskListItem> {
+  async setTaskDone(userId: string, taskId: string, input: SetTaskDoneInput): Promise<TaskListItem> {
+    const existing = await this.prismaService.task.findFirst({ where: { id: taskId, userId } });
+    if (!existing) {
+      throw new BadRequestException('Task not found.');
+    }
     const done = Boolean(input.done);
     const updated = await this.prismaService.task.update({
       where: { id: taskId },
@@ -197,7 +203,7 @@ export class TasksService {
         : { done: false, completedAt: null, completionNotifiedAt: null },
     });
     if (done) {
-      await this.completionNotifierService.pollAndNotifyCompletions();
+      await this.completionNotifierService.pollAndNotifyCompletions(userId);
     }
     return {
       id: updated.id,
@@ -218,20 +224,23 @@ export class TasksService {
     };
   }
 
-  async deleteTask(taskId: string): Promise<{ deleted: boolean }> {
-    await this.prismaService.task.delete({ where: { id: taskId } });
+  async deleteTask(userId: string, taskId: string): Promise<{ deleted: boolean }> {
+    const result = await this.prismaService.task.deleteMany({ where: { id: taskId, userId } });
+    if (result.count === 0) {
+      throw new BadRequestException('Task not found.');
+    }
     return { deleted: true };
   }
 
-  async reorderTasks(taskIds: string[]): Promise<{ reordered: number }> {
+  async reorderTasks(userId: string, taskIds: string[]): Promise<{ reordered: number }> {
     const ids = taskIds.filter((id) => id.trim().length > 0);
     if (ids.length === 0) {
       throw new BadRequestException('taskIds must not be empty.');
     }
     await Promise.all(
       ids.map((taskId, index) =>
-        this.prismaService.task.update({
-          where: { id: taskId },
+        this.prismaService.task.updateMany({
+          where: { id: taskId, userId },
           data: { sortOrder: index + 1 },
         }),
       ),
@@ -239,9 +248,9 @@ export class TasksService {
     return { reordered: ids.length };
   }
 
-  async incomingMessageChats(): Promise<ChatMessageLog[]> {
+  async incomingMessageChats(userId: string): Promise<ChatMessageLog[]> {
     const states = await this.prismaService.chatAnalysisState.findMany({
-      where: { lastAnalyzedAt: { not: null } },
+      where: { userId, lastAnalyzedAt: { not: null } },
       orderBy: [{ lastAnalyzedAt: 'desc' }, { updatedAt: 'desc' }],
       take: 200,
     });
@@ -249,11 +258,11 @@ export class TasksService {
       return [];
     }
 
-    const me = await this.graphService.getCurrentUser();
+    const me = await this.graphService.getCurrentUser(userId);
     const result = await Promise.all(
       states.map(async (state) => ({
         chatId: state.chatId,
-        chatName: await this.resolveChatName(state.chatId, me.id),
+        chatName: await this.resolveChatName(userId, state.chatId, me.id),
         status: state.status,
         latestMessageAt: state.latestMessageAt?.toISOString() ?? null,
         lastAnalyzedAt: state.lastAnalyzedAt?.toISOString() ?? null,
@@ -264,9 +273,9 @@ export class TasksService {
     return result;
   }
 
-  async flushAnalyzingChats(): Promise<FlushAnalyzingChatsSummary> {
+  async flushAnalyzingChats(userId: string): Promise<FlushAnalyzingChatsSummary> {
     const result = await this.prismaService.chatAnalysisState.updateMany({
-      where: { status: 'ANALYZING' },
+      where: { userId, status: 'ANALYZING' },
       data: {
         status: 'NO_TASKS',
         lastAnalyzedAt: new Date(),
@@ -275,15 +284,15 @@ export class TasksService {
     return { flushed: result.count };
   }
 
-  private async resolveChatName(chatId: string, myUserId: string): Promise<string> {
+  private async resolveChatName(userId: string, chatId: string, myUserId: string): Promise<string> {
     try {
-      const chat = await this.graphService.getChat(chatId);
+      const chat = await this.graphService.getChat(userId, chatId);
       const topic = chat?.topic?.trim();
       if (topic) {
         return topic;
       }
 
-      const members = await this.graphService.listChatMembers(chatId);
+      const members = await this.graphService.listChatMembers(userId, chatId);
       if (members.length === 0) {
         return chatId;
       }
@@ -353,8 +362,9 @@ export class TasksService {
     return null;
   }
 
-  private async resolveNextSortOrder(): Promise<number> {
+  private async resolveNextSortOrder(userId: string): Promise<number> {
     const current = await this.prismaService.task.findFirst({
+      where: { userId },
       orderBy: { sortOrder: 'desc' },
       select: { sortOrder: true },
     });

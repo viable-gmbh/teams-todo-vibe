@@ -15,9 +15,9 @@ export class SettingsService {
     private readonly configService: ConfigService,
   ) {}
 
-  async getSettings() {
-    const keys = await this.getDecryptedKeys();
-    const settings = await this.prismaService.settings.findFirst();
+  async getSettings(userId: string) {
+    const keys = await this.getDecryptedKeys(userId);
+    const settings = await this.prismaService.settings.findUnique({ where: { userId } });
     return {
       openaiApiKeyHint: keys.openaiApiKey ? `****${keys.openaiApiKey.slice(-4)}` : null,
       reactionEmoji: this.normalizeReactionEmoji(settings?.reactionEmoji) ?? this.defaultReactionEmoji,
@@ -26,21 +26,21 @@ export class SettingsService {
     };
   }
 
-  async updateSettings(payload: UpdateSettingsDto) {
+  async updateSettings(userId: string, payload: UpdateSettingsDto) {
     if (
       !payload.openaiApiKey &&
       payload.reactionEmoji === undefined &&
       payload.completionReplyDe === undefined &&
       payload.completionReplyEn === undefined
     ) {
-      return this.getSettings();
+      return this.getSettings(userId);
     }
     const secret = this.configService.get<string>('SESSION_SECRET', 'dev-session-secret');
     const openaiEncrypted = payload.openaiApiKey
       ? encryptAes256(payload.openaiApiKey, secret)
       : undefined;
 
-    const current = await this.prismaService.settings.findFirst();
+    const current = await this.prismaService.settings.findUnique({ where: { userId } });
     if (current) {
       await this.prismaService.settings.update({
         where: { id: current.id },
@@ -71,6 +71,7 @@ export class SettingsService {
     } else {
       await this.prismaService.settings.create({
         data: {
+          userId,
           openaiKeyEnc: openaiEncrypted,
           reactionEmoji:
             this.normalizeReactionEmoji(payload.reactionEmoji) ?? this.defaultReactionEmoji,
@@ -83,16 +84,16 @@ export class SettingsService {
         },
       });
     }
-    return this.getSettings();
+    return this.getSettings(userId);
   }
 
-  async getOpenAiApiKey(): Promise<string | null> {
-    const keys = await this.getDecryptedKeys();
+  async getOpenAiApiKey(userId: string): Promise<string | null> {
+    const keys = await this.getDecryptedKeys(userId);
     return keys.openaiApiKey;
   }
 
-  private async getDecryptedKeys(): Promise<{ openaiApiKey: string | null }> {
-    const settings = await this.prismaService.settings.findFirst();
+  private async getDecryptedKeys(userId: string): Promise<{ openaiApiKey: string | null }> {
+    const settings = await this.prismaService.settings.findUnique({ where: { userId } });
     if (!settings) {
       return { openaiApiKey: null };
     }

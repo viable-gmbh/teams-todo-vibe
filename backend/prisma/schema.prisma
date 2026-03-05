@@ -8,47 +8,62 @@ datasource db {
 }
 
 model User {
-  id             String   @id @default(auto()) @map("_id") @db.ObjectId
-  msUserId       String?  @unique
-  msAccessToken  String
-  msRefreshToken String
-  msTokenExpiry  DateTime
-  createdAt      DateTime @default(now())
+  id                    String               @id @default(auto()) @map("_id") @db.ObjectId
+  msUserId              String               @unique
+  msAccessToken         String
+  msRefreshToken        String
+  msTokenExpiry         DateTime
+  createdAt             DateTime             @default(now())
+  trustedUsers          TrustedUser[]
+  tasks                 Task[]
+  autoReplies           AutoReply[]
+  incomingMessages      IncomingMessage[]
+  chatAnalysisStates    ChatAnalysisState[]
+  settings              Settings?
+  webhookSubscriptions  WebhookSubscription[]
 }
 
 model TrustedUser {
   id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   displayName String
-  email       String   @unique
+  email       String
   createdAt   DateTime @default(now())
+
+  @@unique([userId, email])
 }
 
 model Task {
-  id          String   @id @default(auto()) @map("_id") @db.ObjectId
-  text        String
-  description String?
-  sortOrder   Int      @default(0)
-  priority    String
-  due         String?
-  assignee    String?
-  source      String
-  sourceType  TaskSourceType @default(AUTO_DETECTED)
-  autoReplyEnabled Boolean @default(true)
+  id                String         @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String         @db.ObjectId
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  text              String
+  description       String?
+  sortOrder         Int            @default(0)
+  priority          String
+  due               String?
+  assignee          String?
+  source            String
+  sourceType        TaskSourceType @default(AUTO_DETECTED)
+  autoReplyEnabled  Boolean        @default(true)
   sourceMessageText String?
-  sourceLanguage String?
-  chatId      String
+  sourceLanguage    String?
+  chatId            String
   graphMessageId String
-  fromSelf    Boolean  @default(false)
-  done        Boolean  @default(false)
-  completedAt DateTime?
+  fromSelf          Boolean        @default(false)
+  done              Boolean        @default(false)
+  completedAt       DateTime?
   completionNotifiedAt DateTime?
-  createdAt   DateTime @default(now())
+  createdAt         DateTime       @default(now())
 
-  @@unique([chatId, graphMessageId])
+  @@unique([userId, chatId, graphMessageId])
 }
 
 model AutoReply {
   id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String   @db.ObjectId
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   senderName  String
   messageText String
   chatId      String
@@ -57,6 +72,8 @@ model AutoReply {
 
 model IncomingMessage {
   id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String   @db.ObjectId
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   graphMessageId String
   senderName     String
   senderEmail    String?
@@ -66,12 +83,14 @@ model IncomingMessage {
   teamsMessageAt DateTime?
   receivedAt     DateTime @default(now())
 
-  @@unique([chatId, graphMessageId])
+  @@unique([userId, chatId, graphMessageId])
 }
 
 model ChatAnalysisState {
   id              String             @id @default(auto()) @map("_id") @db.ObjectId
-  chatId          String             @unique
+  userId          String             @db.ObjectId
+  user            User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  chatId          String
   status          ChatAnalysisStatus @default(QUEUED)
   latestMessageAt DateTime?
   lastAnalyzedAt  DateTime?
@@ -79,10 +98,14 @@ model ChatAnalysisState {
   tasksFound      Int                @default(0)
   updatedAt       DateTime           @updatedAt
   createdAt       DateTime           @default(now())
+
+  @@unique([userId, chatId])
 }
 
 model Settings {
   id           String @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String @unique @db.ObjectId
+  user         User   @relation(fields: [userId], references: [id], onDelete: Cascade)
   openaiKeyEnc  String?
   reactionEmoji String?
   completionReplyDe String?
@@ -91,10 +114,14 @@ model Settings {
 
 model WebhookSubscription {
   id                String   @id @default(auto()) @map("_id") @db.ObjectId
-  graphSubscription String   @unique
+  userId            String   @db.ObjectId
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  graphSubscription String
   resource          String
   expirationDate    DateTime
   createdAt         DateTime @default(now())
+
+  @@unique([userId, graphSubscription])
 }
 
 enum MessageProcessingStatus {

@@ -65,7 +65,7 @@ export class AuthService {
     });
   }
 
-  async handleAuthCallback(code: string): Promise<void> {
+  async handleAuthCallback(code: string): Promise<{ userId: string }> {
     const redirectUri = this.configService.get<string>('MS_REDIRECT_URI');
     if (!redirectUri) {
       throw new InternalServerErrorException('Missing MS_REDIRECT_URI configuration.');
@@ -82,10 +82,13 @@ export class AuthService {
       throw new UnauthorizedException('Microsoft authentication failed.');
     }
 
-    const msUserId = response.account?.localAccountId ?? response.account?.homeAccountId ?? null;
-    const existing = await this.prismaService.user.findFirst();
+    const msUserId = response.account?.localAccountId ?? response.account?.homeAccountId;
+    if (!msUserId) {
+      throw new UnauthorizedException('Microsoft account identifier unavailable.');
+    }
+    const existing = await this.prismaService.user.findUnique({ where: { msUserId } });
     if (existing) {
-      await this.prismaService.user.update({
+      const updated = await this.prismaService.user.update({
         where: { id: existing.id },
         data: {
           msUserId,
@@ -94,10 +97,10 @@ export class AuthService {
           msTokenExpiry: response.expiresOn,
         },
       });
-      return;
+      return { userId: updated.id };
     }
 
-    await this.prismaService.user.create({
+    const created = await this.prismaService.user.create({
       data: {
         msUserId,
         msAccessToken: response.accessToken,
@@ -105,18 +108,22 @@ export class AuthService {
         msTokenExpiry: response.expiresOn,
       },
     });
+    return { userId: created.id };
   }
 
-  async getAuthStatus(): Promise<{ authenticated: boolean; expiresAt: string | null }> {
-    const user = await this.prismaService.user.findFirst();
+  async getAuthStatus(userId: string | null): Promise<{ authenticated: boolean; expiresAt: string | null }> {
+    if (!userId) {
+      return { authenticated: false, expiresAt: null };
+    }
+    const user = await this.prismaService.user.findUnique({ where: { id: userId } });
     return {
       authenticated: !!user,
       expiresAt: user?.msTokenExpiry.toISOString() ?? null,
     };
   }
 
-  async getValidAccessToken(forceRefresh = false): Promise<string> {
-    const user = await this.prismaService.user.findFirst();
+  async getValidAccessToken(userId: string, forceRefresh = false): Promise<string> {
+    const user = await this.prismaService.user.findUnique({ where: { id: userId } });
     if (!user) {
       throw new UnauthorizedException('Microsoft account not connected.');
     }

@@ -35,9 +35,9 @@ export class GraphService {
 
   constructor(private readonly authService: AuthService) {}
 
-  private async request<T>(config: AxiosRequestConfig): Promise<T> {
+  private async request<T>(userId: string, config: AxiosRequestConfig): Promise<T> {
     try {
-      const accessToken = await this.authService.getValidAccessToken();
+      const accessToken = await this.authService.getValidAccessToken(userId);
       const response = await axios.request<T>({
         ...config,
         headers: {
@@ -52,7 +52,7 @@ export class GraphService {
       if (status !== 401) {
         throw error;
       }
-      const refreshedToken = await this.authService.getValidAccessToken(true);
+      const refreshedToken = await this.authService.getValidAccessToken(userId, true);
       const response = await axios.request<T>({
         ...config,
         headers: {
@@ -65,30 +65,30 @@ export class GraphService {
     }
   }
 
-  async getCurrentUser(): Promise<{
+  async getCurrentUser(userId: string): Promise<{
     id: string;
     mail?: string;
     userPrincipalName?: string;
     displayName?: string;
   }> {
-    return this.request({
+    return this.request(userId, {
       method: 'GET',
       url: `${this.baseUrl}/me?$select=id,mail,userPrincipalName,displayName`,
     });
   }
 
-  async listChats(limit = 50): Promise<GraphChatInfo[]> {
+  async listChats(userId: string, limit = 50): Promise<GraphChatInfo[]> {
     const safeLimit = Math.min(50, Math.max(1, limit));
-    const data = await this.request<{ value: GraphChatInfo[] }>({
+    const data = await this.request<{ value: GraphChatInfo[] }>(userId, {
       method: 'GET',
       url: `${this.baseUrl}/me/chats?$top=${safeLimit}&$select=id,topic,chatType`,
     });
     return data.value;
   }
 
-  async getChat(chatId: string): Promise<GraphChatInfo | null> {
+  async getChat(userId: string, chatId: string): Promise<GraphChatInfo | null> {
     try {
-      return await this.request<GraphChatInfo>({
+      return await this.request<GraphChatInfo>(userId, {
         method: 'GET',
         url: `${this.baseUrl}/chats/${chatId}?$select=id,topic,chatType`,
       });
@@ -97,10 +97,10 @@ export class GraphService {
     }
   }
 
-  async listChatMembers(chatId: string): Promise<Array<{ id?: string; displayName?: string; email?: string }>> {
+  async listChatMembers(userId: string, chatId: string): Promise<Array<{ id?: string; displayName?: string; email?: string }>> {
     const members = await this.request<{
       value: Array<{ userId?: string; displayName?: string; email?: string }>;
-    }>({
+    }>(userId, {
       method: 'GET',
       url: `${this.baseUrl}/chats/${chatId}/members`,
     });
@@ -112,22 +112,23 @@ export class GraphService {
   }
 
   async listRecentMessages(
+    userId: string,
     chatId: string,
     limit = 20,
   ): Promise<GraphChatMessage[]> {
     const safeLimit = Math.min(50, Math.max(1, limit));
     const data = await this.request<{
       value: GraphChatMessage[];
-    }>({
+    }>(userId, {
       method: 'GET',
       url: `${this.baseUrl}/chats/${chatId}/messages?$top=${safeLimit}&$orderby=createdDateTime desc`,
     });
     return data.value.reverse();
   }
 
-  async getMessage(chatId: string, messageId: string): Promise<GraphChatMessage | null> {
+  async getMessage(userId: string, chatId: string, messageId: string): Promise<GraphChatMessage | null> {
     try {
-      return await this.request<GraphChatMessage>({
+      return await this.request<GraphChatMessage>(userId, {
         method: 'GET',
         url: `${this.baseUrl}/chats/${chatId}/messages/${messageId}`,
       });
@@ -136,9 +137,9 @@ export class GraphService {
     }
   }
 
-  async sendReply(chatId: string, messageId: string, htmlContent: string): Promise<void> {
+  async sendReply(userId: string, chatId: string, messageId: string, htmlContent: string): Promise<void> {
     try {
-      await this.request({
+      await this.request(userId, {
         method: 'POST',
         url: `${this.baseUrl}/chats/${chatId}/messages/replyWithQuote`,
         data: {
@@ -157,7 +158,7 @@ export class GraphService {
     }
 
     try {
-      await this.request({
+      await this.request(userId, {
         method: 'POST',
         url: `${this.baseUrl}/chats/${chatId}/messages/${messageId}/replies`,
         data: {
@@ -175,7 +176,7 @@ export class GraphService {
       }
     }
 
-    await this.request({
+    await this.request(userId, {
       method: 'POST',
       url: `${this.baseUrl}/chats/${chatId}/messages`,
       data: {

@@ -11,7 +11,7 @@ export class CompletionNotifierScheduler {
   @Cron(CronExpression.EVERY_5_MINUTES)
   async run(): Promise<void> {
     try {
-      await this.completionNotifierService.pollAndNotifyCompletions();
+      await this.completionNotifierService.pollAndNotifyCompletionsForAllUsers();
     } catch (error) {
       this.logger.warn(`Completion notifier run failed: ${(error as Error).message}`);
     }
