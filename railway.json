@@ -1,0 +1,14 @@
+{
+  "services": {
+    "backend": {
+      "root": "backend",
+      "buildCommand": "npm run build",
+      "startCommand": "npm run start:prod"
+    },
+    "frontend": {
+      "root": "frontend",
+      "buildCommand": "npm run build",
+      "startCommand": "npx serve dist"
+    }
+  }
+}

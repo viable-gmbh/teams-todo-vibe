@@ -1,0 +1,32 @@
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Root / workspace logs
+*.log
+logs/
+.cursor/debug-*.log
+
+# Node
+node_modules/
+
+# Frontend build artifacts
+frontend/dist/
+frontend/dist-ssr/
+frontend/node_modules/
+
+# Backend build artifacts
+backend/dist/
+backend/node_modules/
+
+# Env files (keep examples)
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+frontend/.env
+frontend/.env.*
+!frontend/.env.example

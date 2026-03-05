@@ -1,0 +1,104 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  msUserId       String?  @unique
+  msAccessToken  String
+  msRefreshToken String
+  msTokenExpiry  DateTime
+  createdAt      DateTime @default(now())
+}
+
+model TrustedUser {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  displayName String
+  email       String   @unique
+  createdAt   DateTime @default(now())
+}
+
+model Task {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  text        String
+  priority    String
+  due         String?
+  assignee    String?
+  source      String
+  chatId      String
+  graphMessageId String
+  fromSelf    Boolean  @default(false)
+  done        Boolean  @default(false)
+  todoistId   String?
+  createdAt   DateTime @default(now())
+
+  @@unique([chatId, graphMessageId])
+}
+
+model AutoReply {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  senderName  String
+  messageText String
+  chatId      String
+  repliedAt   DateTime @default(now())
+}
+
+model IncomingMessage {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  graphMessageId String
+  senderName     String
+  senderEmail    String?
+  messageText    String
+  chatId         String
+  status         MessageProcessingStatus @default(UNQUEUED)
+  teamsMessageAt DateTime?
+  receivedAt     DateTime @default(now())
+
+  @@unique([chatId, graphMessageId])
+}
+
+model ChatAnalysisState {
+  id              String             @id @default(auto()) @map("_id") @db.ObjectId
+  chatId          String             @unique
+  status          ChatAnalysisStatus @default(QUEUED)
+  latestMessageAt DateTime?
+  lastAnalyzedAt  DateTime?
+  messagesAnalyzed Int               @default(0)
+  tasksFound      Int                @default(0)
+  updatedAt       DateTime           @updatedAt
+  createdAt       DateTime           @default(now())
+}
+
+model Settings {
+  id           String @id @default(auto()) @map("_id") @db.ObjectId
+  todoistKeyEnc String?
+  openaiKeyEnc  String?
+}
+
+model WebhookSubscription {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  graphSubscription String   @unique
+  resource          String
+  expirationDate    DateTime
+  createdAt         DateTime @default(now())
+}
+
+enum MessageProcessingStatus {
+  UNQUEUED
+  QUEUED
+  ANALYZING
+  NOT_A_TASK
+  TASK
+}
+
+enum ChatAnalysisStatus {
+  QUEUED
+  ANALYZING
+  TASKS_FOUND
+  NO_TASKS
+}
