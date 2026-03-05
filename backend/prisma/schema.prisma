@@ -26,15 +26,22 @@ model TrustedUser {
 model Task {
   id          String   @id @default(auto()) @map("_id") @db.ObjectId
   text        String
+  description String?
+  sortOrder   Int      @default(0)
   priority    String
   due         String?
   assignee    String?
   source      String
+  sourceType  TaskSourceType @default(AUTO_DETECTED)
+  autoReplyEnabled Boolean @default(true)
+  sourceMessageText String?
+  sourceLanguage String?
   chatId      String
   graphMessageId String
   fromSelf    Boolean  @default(false)
   done        Boolean  @default(false)
-  todoistId   String?
+  completedAt DateTime?
+  completionNotifiedAt DateTime?
   createdAt   DateTime @default(now())
 
   @@unique([chatId, graphMessageId])
@@ -76,8 +83,10 @@ model ChatAnalysisState {
 
 model Settings {
   id           String @id @default(auto()) @map("_id") @db.ObjectId
-  todoistKeyEnc String?
   openaiKeyEnc  String?
+  reactionEmoji String?
+  completionReplyDe String?
+  completionReplyEn String?
 }
 
 model WebhookSubscription {
@@ -101,4 +110,9 @@ enum ChatAnalysisStatus {
   ANALYZING
   TASKS_FOUND
   NO_TASKS
+}
+
+enum TaskSourceType {
+  AUTO_DETECTED
+  CUSTOM
 }

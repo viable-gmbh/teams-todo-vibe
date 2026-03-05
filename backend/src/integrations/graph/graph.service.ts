@@ -119,4 +119,56 @@ export class GraphService {
     }
   }
 
+  async sendReply(chatId: string, messageId: string, htmlContent: string): Promise<void> {
+    try {
+      await this.request({
+        method: 'POST',
+        url: `${this.baseUrl}/chats/${chatId}/messages/replyWithQuote`,
+        data: {
+          messageIds: [messageId],
+          replyMessage: {
+            body: {
+              contentType: 'html',
+              content: htmlContent,
+            },
+          },
+        },
+      });
+      return;
+    } catch {
+      // Fall through to compatibility paths.
+    }
+
+    try {
+      await this.request({
+        method: 'POST',
+        url: `${this.baseUrl}/chats/${chatId}/messages/${messageId}/replies`,
+        data: {
+          body: {
+            contentType: 'html',
+            content: htmlContent,
+          },
+        },
+      });
+      return;
+    } catch (error) {
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+      if (status !== 400 && status !== 404 && status !== 405) {
+        throw error;
+      }
+    }
+
+    await this.request({
+      method: 'POST',
+      url: `${this.baseUrl}/chats/${chatId}/messages`,
+      data: {
+        body: {
+          contentType: 'html',
+          content: htmlContent,
+        },
+        replyToId: messageId,
+      },
+    });
+  }
+
 }

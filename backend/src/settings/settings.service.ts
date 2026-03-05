@@ -6,6 +6,10 @@ import { decryptAes256, encryptAes256 } from '../common/crypto.util';
 
 @Injectable()
 export class SettingsService {
+  private readonly defaultReactionEmoji = 'wrench';
+  private readonly defaultCompletionReplyDe = 'Erledigt.';
+  private readonly defaultCompletionReplyEn = 'Done.';
+
   constructor(
     private readonly prismaService: PrismaService,
     private readonly configService: ConfigService,
@@ -13,23 +17,25 @@ export class SettingsService {
 
   async getSettings() {
     const keys = await this.getDecryptedKeys();
-    if (!keys.todoistApiKey && !keys.openaiApiKey) {
-      return { todoistApiKeyHint: null, openaiApiKeyHint: null };
-    }
+    const settings = await this.prismaService.settings.findFirst();
     return {
-      todoistApiKeyHint: keys.todoistApiKey ? `****${keys.todoistApiKey.slice(-4)}` : null,
       openaiApiKeyHint: keys.openaiApiKey ? `****${keys.openaiApiKey.slice(-4)}` : null,
+      reactionEmoji: this.normalizeReactionEmoji(settings?.reactionEmoji) ?? this.defaultReactionEmoji,
+      completionReplyDe: settings?.completionReplyDe?.trim() || this.defaultCompletionReplyDe,
+      completionReplyEn: settings?.completionReplyEn?.trim() || this.defaultCompletionReplyEn,
     };
   }
 
   async updateSettings(payload: UpdateSettingsDto) {
-    if (!payload.todoistApiKey && !payload.openaiApiKey) {
+    if (
+      !payload.openaiApiKey &&
+      payload.reactionEmoji === undefined &&
+      payload.completionReplyDe === undefined &&
+      payload.completionReplyEn === undefined
+    ) {
       return this.getSettings();
     }
     const secret = this.configService.get<string>('SESSION_SECRET', 'dev-session-secret');
-    const todoistEncrypted = payload.todoistApiKey
-      ? encryptAes256(payload.todoistApiKey, secret)
-      : undefined;
     const openaiEncrypted = payload.openaiApiKey
       ? encryptAes256(payload.openaiApiKey, secret)
       : undefined;
@@ -39,15 +45,41 @@ export class SettingsService {
       await this.prismaService.settings.update({
         where: { id: current.id },
         data: {
-          ...(todoistEncrypted ? { todoistKeyEnc: todoistEncrypted } : {}),
           ...(openaiEncrypted ? { openaiKeyEnc: openaiEncrypted } : {}),
+          ...(payload.reactionEmoji !== undefined
+            ? {
+                reactionEmoji:
+                  this.normalizeReactionEmoji(payload.reactionEmoji) ?? this.defaultReactionEmoji,
+              }
+            : {}),
+          ...(payload.completionReplyDe !== undefined
+            ? {
+                completionReplyDe:
+                  this.normalizeOptionalText(payload.completionReplyDe) ??
+                  this.defaultCompletionReplyDe,
+              }
+            : {}),
+          ...(payload.completionReplyEn !== undefined
+            ? {
+                completionReplyEn:
+                  this.normalizeOptionalText(payload.completionReplyEn) ??
+                  this.defaultCompletionReplyEn,
+              }
+            : {}),
         },
       });
     } else {
       await this.prismaService.settings.create({
         data: {
-          todoistKeyEnc: todoistEncrypted,
           openaiKeyEnc: openaiEncrypted,
+          reactionEmoji:
+            this.normalizeReactionEmoji(payload.reactionEmoji) ?? this.defaultReactionEmoji,
+          completionReplyDe:
+            this.normalizeOptionalText(payload.completionReplyDe) ??
+            this.defaultCompletionReplyDe,
+          completionReplyEn:
+            this.normalizeOptionalText(payload.completionReplyEn) ??
+            this.defaultCompletionReplyEn,
         },
       });
     }
@@ -59,10 +91,10 @@ export class SettingsService {
     return keys.openaiApiKey;
   }
 
-  private async getDecryptedKeys(): Promise<{ todoistApiKey: string | null; openaiApiKey: string | null }> {
+  private async getDecryptedKeys(): Promise<{ openaiApiKey: string | null }> {
     const settings = await this.prismaService.settings.findFirst();
     if (!settings) {
-      return { todoistApiKey: null, openaiApiKey: null };
+      return { openaiApiKey: null };
     }
 
     const secret = this.configService.get<string>(
@@ -70,12 +102,28 @@ export class SettingsService {
       'dev-session-secret',
     );
     return {
-      todoistApiKey: settings.todoistKeyEnc
-        ? decryptAes256(settings.todoistKeyEnc, secret)
-        : null,
       openaiApiKey: settings.openaiKeyEnc
         ? decryptAes256(settings.openaiKeyEnc, secret)
         : null,
     };
+  }
+
+  private normalizeOptionalText(value?: string | null): string | null {
+    if (typeof value !== 'string') {
+      return null;
+    }
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+
+  private normalizeReactionEmoji(value?: string | null): 'thumbsup' | 'heart' | 'wrench' | null {
+    const normalized = this.normalizeOptionalText(value)?.toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+    if (normalized === 'thumbsup' || normalized === 'heart' || normalized === 'wrench') {
+      return normalized;
+    }
+    return this.defaultReactionEmoji;
   }
 }

@@ -1,4 +1,4 @@
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bull';
 import type { Queue } from 'bull';
 import axios from 'axios';
@@ -9,14 +9,13 @@ import {
   OpenAiService,
 } from '../integrations/openai/openai.service';
 import { GraphChatMessage, GraphService } from '../integrations/graph/graph.service';
-import { TodoistService } from '../integrations/todoist/todoist.service';
-import { TaskAnalysisResult } from '../common/task-analysis';
+import { TaskSourceType } from '@prisma/client';
 
 export interface SyncRunSummary {
   chatsScanned: number;
   messagesScanned: number;
   taskCandidates: number;
-  createdInTodoist: number;
+  createdTasks: number;
   skippedAsExisting: number;
 }
 
@@ -33,7 +32,7 @@ export interface SyncEnqueueSummary {
 @Injectable()
 export class MessagesService {
   private readonly logger = new Logger(MessagesService.name);
-  private readonly reactionEmoji: string;
+  private readonly defaultReactionEmoji: string;
   private readonly pollChatLimit: number;
   private readonly pollMessageLimit: number;
 
@@ -42,10 +41,9 @@ export class MessagesService {
     private readonly prismaService: PrismaService,
     private readonly openAiService: OpenAiService,
     private readonly graphService: GraphService,
-    private readonly todoistService: TodoistService,
     @InjectQueue('teams-sync') private readonly syncQueue: Queue,
   ) {
-    this.reactionEmoji = (this.configService.get<string>('SYNC_REACTION_EMOJI') ?? 'sparkles')
+    this.defaultReactionEmoji = (this.configService.get<string>('SYNC_REACTION_EMOJI') ?? 'wrench')
       .trim()
       .toLowerCase();
     this.pollChatLimit = this.readBoundedNumber('SYNC_CHAT_LIMIT', 10, 1, 25);
@@ -63,13 +61,6 @@ export class MessagesService {
     chatLimit?: number,
     messageLimit?: number,
   ): Promise<SyncEnqueueSummary> {
-    const todoistSnapshot = await this.todoistService.listTasks();
-    if (!todoistSnapshot.connected) {
-      throw new ServiceUnavailableException(
-        'Todoist is not connected or reachable. Please check your Todoist API key in Settings.',
-      );
-    }
-
     const safeChatLimit = Math.min(25, Math.max(1, chatLimit ?? this.pollChatLimit));
     const safeMessageLimit = Math.min(50, Math.max(1, messageLimit ?? this.pollMessageLimit));
     const chats = await this.graphService.listChats(safeChatLimit);
@@ -127,29 +118,20 @@ export class MessagesService {
         throw error;
       }
 
-      let todoistSnapshot: Awaited<ReturnType<TodoistService['listTasks']>>;
-      try {
-        todoistSnapshot = await this.todoistService.listTasks();
-      } catch (error) {
-        this.logger.error(
-          `Failed to load Todoist task snapshot chatId=${job.chatId}: ${this.describeError(error)}`,
-        );
-        throw error;
-      }
-      if (!todoistSnapshot.connected) {
-        this.logger.error(`Todoist unavailable during analysis chatId=${job.chatId}`);
-        throw new ServiceUnavailableException(
-          'Todoist is not connected or reachable. Unable to sync extracted tasks.',
-        );
-      }
-      const existingTodoistTaskTitles = todoistSnapshot.tasks.map((task) => task.content);
+      const existingTaskTitles = (
+        await this.prismaService.task.findMany({
+          where: { done: false },
+          select: { text: true },
+        })
+      ).map((task) => task.text);
+      const configuredReactionEmoji = await this.resolveReactionEmoji();
       const chatTitle = await this.resolveChatTitle(job.chatId);
 
       const summary: SyncRunSummary = {
         chatsScanned: 1,
         messagesScanned: 0,
         taskCandidates: 0,
-        createdInTodoist: 0,
+        createdTasks: 0,
         skippedAsExisting: 0,
       };
 
@@ -218,11 +200,11 @@ export class MessagesService {
         });
       }
 
-      const reactedMessages = this.findReactionCandidates(messages, me.id);
+      const reactedMessages = this.findReactionCandidates(messages, me.id, configuredReactionEmoji);
 
       if (reactedMessages.length === 0) {
         this.logger.warn(
-          `No reaction candidates found chatId=${job.chatId} messagesScanned=${messages.length} reaction=${this.reactionEmoji}`,
+          `No reaction candidates found chatId=${job.chatId} messagesScanned=${messages.length} reaction=${configuredReactionEmoji}`,
         );
         await this.prismaService.chatAnalysisState.upsert({
           where: { chatId: job.chatId },
@@ -245,6 +227,7 @@ export class MessagesService {
         return summary;
       }
 
+      let nextSortOrder = await this.resolveNextSortOrder();
       for (const candidateMessage of reactedMessages) {
         const targetIndex = messages.findIndex((message) => message.id === candidateMessage.id);
         if (targetIndex < 0) {
@@ -274,7 +257,7 @@ export class MessagesService {
         try {
           extraction = await this.openAiService.analyzeReactionCandidateForTask(
             aiPayload,
-            existingTodoistTaskTitles,
+            existingTaskTitles,
           );
         } catch (error) {
           this.logger.error(
@@ -292,34 +275,63 @@ export class MessagesService {
         }
 
         const taskText = this.formatTaskText(extraction.taskText);
-        if (!taskText || this.matchesExistingTodo(taskText, existingTodoistTaskTitles)) {
+        if (!taskText || this.matchesExistingTask(taskText, existingTaskTitles)) {
           summary.skippedAsExisting += 1;
           continue;
         }
         summary.taskCandidates += 1;
         const source = this.buildTaskContextDescription(aiPayload, extraction, chatTitle);
-        const payload: TaskAnalysisResult = {
-          isTask: true,
-          taskText,
-          priority: extraction.priority,
-          due: extraction.due,
-          assignee: extraction.assignee,
-        };
-
-        const todoistId = await this.todoistService.createTask(payload, source);
-        if (!todoistId) {
+        const sourceMessageText = this.stripHtml(candidateMessage.body?.content ?? '');
+        const sourceLanguage = this.detectSourceLanguage(sourceMessageText);
+        try {
+          await this.prismaService.task.upsert({
+            where: {
+              chatId_graphMessageId: {
+                chatId: job.chatId,
+                graphMessageId: candidateMessage.id,
+              },
+            },
+            update: {
+              text: taskText,
+              description: source,
+              priority: extraction.priority,
+              due: extraction.due,
+              assignee: extraction.assignee,
+              source,
+              sourceType: TaskSourceType.AUTO_DETECTED,
+              autoReplyEnabled: true,
+              sourceMessageText,
+              sourceLanguage,
+              fromSelf: this.isSelfMessage(candidateMessage, me),
+            },
+            create: {
+              text: taskText,
+              description: source,
+              sortOrder: nextSortOrder,
+              priority: extraction.priority,
+              due: extraction.due,
+              assignee: extraction.assignee,
+              source,
+              sourceType: TaskSourceType.AUTO_DETECTED,
+              autoReplyEnabled: true,
+              sourceMessageText,
+              sourceLanguage,
+              chatId: job.chatId,
+              graphMessageId: candidateMessage.id,
+              fromSelf: this.isSelfMessage(candidateMessage, me),
+              done: false,
+            },
+          });
+          nextSortOrder += 1;
+        } catch (error) {
           this.logger.error(
-            `Todoist sync failed for chat=${job.chatId} message=${candidateMessage.id} task="${taskText}"`,
-          );
-          this.logger.error(
-            `Todoist createTask returned empty result chatId=${job.chatId} graphMessageId=${candidateMessage.id}`,
-          );
-          throw new ServiceUnavailableException(
-            'Failed to sync a task to Todoist. Please retry after checking Todoist connectivity.',
+            `Failed to persist task linkage chatId=${job.chatId} graphMessageId=${candidateMessage.id}: ${
+              this.describeError(error)
+            }`,
           );
         }
-        summary.createdInTodoist += 1;
-        existingTodoistTaskTitles.push(taskText);
+        summary.createdTasks += 1;
+        existingTaskTitles.push(taskText);
       }
 
       await this.prismaService.chatAnalysisState.upsert({
@@ -490,19 +502,28 @@ export class MessagesService {
     return Boolean(senderEmail && (senderEmail === meMail || senderEmail === meUpn));
   }
 
-  private findReactionCandidates(messages: GraphChatMessage[], meId: string): GraphChatMessage[] {
-    return messages.filter((message) => this.hasConfiguredReaction(message, meId));
+  private findReactionCandidates(
+    messages: GraphChatMessage[],
+    meId: string,
+    configuredReactionEmoji: string,
+  ): GraphChatMessage[] {
+    return messages.filter((message) => this.hasConfiguredReaction(message, meId, configuredReactionEmoji));
   }
 
-  private hasConfiguredReaction(message: GraphChatMessage, meId: string): boolean {
+  private hasConfiguredReaction(
+    message: GraphChatMessage,
+    meId: string,
+    configuredReactionEmoji: string,
+  ): boolean {
     if (!message.reactions || message.reactions.length === 0) {
       return false;
     }
+    const targetValues = this.resolveReactionTargets(configuredReactionEmoji);
     return message.reactions.some((reaction) => {
       const reactionType = (reaction.reactionType ?? '').trim().toLowerCase();
       const displayName = (reaction.displayName ?? '').trim().toLowerCase();
       const reactorId = reaction.user?.user?.id;
-      const matchedEmoji = reactionType === this.reactionEmoji || displayName === this.reactionEmoji;
+      const matchedEmoji = targetValues.has(reactionType) || targetValues.has(displayName);
       if (!matchedEmoji) {
         return false;
       }
@@ -534,9 +555,9 @@ export class MessagesService {
     return this.toAiMessage(fetched, me);
   }
 
-  private matchesExistingTodo(taskText: string, existingTodoistTaskTitles: string[]): boolean {
+  private matchesExistingTask(taskText: string, existingTaskTitles: string[]): boolean {
     const normalized = taskText.trim().toLowerCase();
-    return existingTodoistTaskTitles.some((title) => title.trim().toLowerCase() === normalized);
+    return existingTaskTitles.some((title) => title.trim().toLowerCase() === normalized);
   }
 
   private async clearAnalyzedMessagesFromLog(
@@ -603,6 +624,32 @@ export class MessagesService {
     return cleaned.slice(0, 420);
   }
 
+  private detectSourceLanguage(text: string): string {
+    const sample = text.trim().toLowerCase();
+    if (!sample) {
+      return 'en';
+    }
+    const germanSignals = [
+      ' und ',
+      ' bitte ',
+      'danke',
+      ' erledigt',
+      ' aufgabe',
+      'nicht',
+      ' mit ',
+      ' für ',
+      'ich ',
+      'wir ',
+      'kannst',
+      'könntest',
+    ];
+    const score = germanSignals.reduce(
+      (sum, token) => (sample.includes(token) ? sum + 1 : sum),
+      0,
+    );
+    return score >= 2 ? 'de' : 'en';
+  }
+
   private async resolveChatTitle(chatId: string): Promise<string> {
     try {
       const chat = await this.graphService.getChat(chatId);
@@ -614,6 +661,27 @@ export class MessagesService {
       // Ignore lookup failures and fall back to the ID.
     }
     return chatId;
+  }
+
+  private async resolveReactionEmoji(): Promise<string> {
+    const settings = await this.prismaService.settings.findFirst({
+      select: { reactionEmoji: true },
+    });
+    return settings?.reactionEmoji?.trim().toLowerCase() || this.defaultReactionEmoji;
+  }
+
+  private resolveReactionTargets(configuredValue: string): Set<string> {
+    const normalized = configuredValue.trim().toLowerCase();
+    const targets = new Set<string>([normalized]);
+    const aliases: Record<string, string[]> = {
+      thumbsup: ['👍', 'thumbs_up', 'thumbs up', 'like'],
+      heart: ['❤️'],
+      wrench: ['🔧', '🛠', '🛠️', 'workingonit', 'working_on_it'],
+    };
+    for (const alias of aliases[normalized] ?? []) {
+      targets.add(alias.trim().toLowerCase());
+    }
+    return targets;
   }
 
   private describeError(error: unknown): string {
@@ -638,5 +706,13 @@ export class MessagesService {
       return error.message;
     }
     return String(error);
+  }
+
+  private async resolveNextSortOrder(): Promise<number> {
+    const latest = await this.prismaService.task.findFirst({
+      orderBy: { sortOrder: 'desc' },
+      select: { sortOrder: true },
+    });
+    return (latest?.sortOrder ?? 0) + 1;
   }
 }

@@ -1,13 +1,25 @@
-import { IsOptional, IsString, MinLength } from 'class-validator';
+import { IsIn, IsOptional, IsString, MinLength } from 'class-validator';
 
 export class UpdateSettingsDto {
   @IsOptional()
   @IsString()
   @MinLength(8)
-  todoistApiKey?: string;
+  openaiApiKey?: string;
 
   @IsOptional()
   @IsString()
-  @MinLength(8)
-  openaiApiKey?: string;
+  @IsIn(['thumbsup', 'heart', 'wrench'], {
+    message: 'reactionEmoji must be one of: thumbsup, heart, wrench.',
+  })
+  reactionEmoji?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  completionReplyDe?: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  completionReplyEn?: string;
 }

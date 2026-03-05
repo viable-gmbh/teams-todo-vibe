@@ -65,7 +65,7 @@ export class OpenAiService {
 
   async analyzeChatForTasks(
     chat: ChatPayloadForAi,
-    existingTodoistTasks: string[],
+    existingTaskTitles: string[],
   ): Promise<ChatTaskExtractionResult> {
     const apiKey = await this.settingsService.getOpenAiApiKey();
     if (!apiKey) {
@@ -86,8 +86,8 @@ export class OpenAiService {
       'Messages (JSON):',
       JSON.stringify(chat.messages),
       '',
-      'Existing Todoist task titles (JSON):',
-      JSON.stringify(existingTodoistTasks),
+      'Existing task titles (JSON):',
+      JSON.stringify(existingTaskTitles),
       '',
       'Rules:',
       '- Favor clearly actionable items.',
@@ -176,7 +176,7 @@ export class OpenAiService {
 
   async analyzeReactionCandidateForTask(
     candidate: ReactionTaskCandidateInput,
-    existingTodoistTasks: string[],
+    existingTaskTitles: string[],
   ): Promise<ExtractedChatTask | null> {
     const apiKey = await this.settingsService.getOpenAiApiKey();
     if (!apiKey) {
@@ -205,8 +205,8 @@ export class OpenAiService {
       'Embedded/replied message referenced by target (JSON or null):',
       JSON.stringify(candidate.embeddedMessage ?? null),
       '',
-      'Existing Todoist task titles (JSON):',
-      JSON.stringify(existingTodoistTasks),
+      'Existing task titles (JSON):',
+      JSON.stringify(existingTaskTitles),
       '',
       'Rules:',
       '- Always output one task object for the reacted message.',

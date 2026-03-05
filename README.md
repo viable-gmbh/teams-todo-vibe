@@ -1,6 +1,6 @@
-# Teams ToDo Bot
+# DoneBetter
 
-Full-stack app that watches Microsoft Teams messages, extracts tasks with OpenAI, and syncs approved tasks to Todoist.
+Full-stack app that watches Microsoft Teams messages, extracts tasks with OpenAI, manages internal todos, and sends completion replies in-thread.
 
 ## Stack
 
@@ -18,7 +18,7 @@ Full-stack app that watches Microsoft Teams messages, extracts tasks with OpenAI
    - copy `frontend/.env.example` to `frontend/.env`
    - OpenAI and Todoist keys are set per-user in the app Settings page (not in env vars)
    - Ensure `DATABASE_URL` includes replica set params for local Mongo:
-     - `mongodb://localhost:27017/teams_todo_bot?replicaSet=rs0&directConnection=true`
+    - `mongodb://localhost:27017/donebetter?replicaSet=rs0&directConnection=true`
 3. Start local infra:
    - `docker compose up -d`
    - (or `npm run infra:up` from root)

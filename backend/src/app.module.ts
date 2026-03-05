@@ -10,6 +10,7 @@ import { MessagesModule } from './messages/messages.module';
 import { TasksModule } from './tasks/tasks.module';
 import { SettingsModule } from './settings/settings.module';
 import { IntegrationsModule } from './integrations/integrations.module';
+import { CompletionNotifierModule } from './completion-notifier/completion-notifier.module';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { IntegrationsModule } from './integrations/integrations.module';
     MessagesModule,
     TasksModule,
     SettingsModule,
+    CompletionNotifierModule,
   ],
   controllers: [AppController],
   providers: [AppService],
