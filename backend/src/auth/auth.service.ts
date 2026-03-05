@@ -1,16 +1,26 @@
 import { Injectable, InternalServerErrorException, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { ConfidentialClientApplication, Configuration } from '@azure/msal-node';
+import {
+  AccountInfo,
+  AuthenticationResult,
+  ConfidentialClientApplication,
+  Configuration,
+} from '@azure/msal-node';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class AuthService {
+  private client: ConfidentialClientApplication | null = null;
+
   constructor(
     private readonly configService: ConfigService,
     private readonly prismaService: PrismaService,
   ) {}
 
   private getClient(): ConfidentialClientApplication {
+    if (this.client) {
+      return this.client;
+    }
     const clientId = this.configService.get<string>('MS_CLIENT_ID');
     const clientSecret = this.configService.get<string>('MS_CLIENT_SECRET');
     const tenantId = this.configService.get<string>('MS_TENANT_ID');
@@ -27,7 +37,8 @@ export class AuthService {
       },
     };
 
-    return new ConfidentialClientApplication(msalConfig);
+    this.client = new ConfidentialClientApplication(msalConfig);
+    return this.client;
   }
 
   private getScopes(): string[] {
@@ -115,6 +126,18 @@ export class AuthService {
     if (!needsRefresh) {
       return user.msAccessToken;
     }
+    const silentResult = await this.tryAcquireTokenSilent(user.msUserId);
+    if (silentResult?.accessToken && silentResult.expiresOn) {
+      await this.prismaService.user.update({
+        where: { id: user.id },
+        data: {
+          msAccessToken: silentResult.accessToken,
+          msTokenExpiry: silentResult.expiresOn,
+        },
+      });
+      return silentResult.accessToken;
+    }
+
     if (!user.msRefreshToken) {
       throw new UnauthorizedException('Refresh token unavailable. Reconnect Microsoft account.');
     }
@@ -139,5 +162,33 @@ export class AuthService {
     });
 
     return refreshed.accessToken;
+  }
+
+  private async tryAcquireTokenSilent(msUserId: string | null): Promise<AuthenticationResult | null> {
+    if (!msUserId) {
+      return null;
+    }
+    const account = await this.resolveAccountFromCache(msUserId);
+    if (!account) {
+      return null;
+    }
+    try {
+      return await this.getClient().acquireTokenSilent({
+        account,
+        scopes: this.getScopes(),
+        forceRefresh: true,
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  private async resolveAccountFromCache(msUserId: string): Promise<AccountInfo | null> {
+    const accounts = await this.getClient().getTokenCache().getAllAccounts();
+    return (
+      accounts.find(
+        (account) => account.localAccountId === msUserId || account.homeAccountId === msUserId,
+      ) ?? null
+    );
   }
 }
