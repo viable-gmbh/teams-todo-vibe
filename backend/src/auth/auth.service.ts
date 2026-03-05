@@ -104,13 +104,14 @@ export class AuthService {
     };
   }
 
-  async getValidAccessToken(): Promise<string> {
+  async getValidAccessToken(forceRefresh = false): Promise<string> {
     const user = await this.prismaService.user.findFirst();
     if (!user) {
       throw new UnauthorizedException('Microsoft account not connected.');
     }
 
-    const needsRefresh = user.msTokenExpiry.getTime() - Date.now() < 5 * 60 * 1000;
+    const needsRefresh =
+      forceRefresh || user.msTokenExpiry.getTime() - Date.now() < 5 * 60 * 1000;
     if (!needsRefresh) {
       return user.msAccessToken;
     }

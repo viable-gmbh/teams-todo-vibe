@@ -36,16 +36,33 @@ export class GraphService {
   constructor(private readonly authService: AuthService) {}
 
   private async request<T>(config: AxiosRequestConfig): Promise<T> {
-    const accessToken = await this.authService.getValidAccessToken();
-    const response = await axios.request<T>({
-      ...config,
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        ...(config.headers ?? {}),
-      },
-    });
-    return response.data;
+    try {
+      const accessToken = await this.authService.getValidAccessToken();
+      const response = await axios.request<T>({
+        ...config,
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          ...(config.headers ?? {}),
+        },
+      });
+      return response.data;
+    } catch (error) {
+      const status = axios.isAxiosError(error) ? error.response?.status : undefined;
+      if (status !== 401) {
+        throw error;
+      }
+      const refreshedToken = await this.authService.getValidAccessToken(true);
+      const response = await axios.request<T>({
+        ...config,
+        headers: {
+          Authorization: `Bearer ${refreshedToken}`,
+          'Content-Type': 'application/json',
+          ...(config.headers ?? {}),
+        },
+      });
+      return response.data;
+    }
   }
 
   async getCurrentUser(): Promise<{
