@@ -20,24 +20,19 @@ export class AuthController {
   @Get('callback')
   async callback(
     @Query('code') code: string,
-    @Req() request: Request & { session?: { userId?: string } },
     @Res() response: Response,
   ): Promise<void> {
     if (!code) {
       throw new BadRequestException('Missing OAuth code.');
     }
     const { userId } = await this.authService.handleAuthCallback(code);
-    if (request.session) {
-      request.session.userId = userId;
-    }
+    const authToken = this.authService.issueAuthToken(userId);
     const frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:5173');
-    response.redirect(`${frontendUrl}?connected=1`);
+    response.redirect(`${frontendUrl}?connected=1&token=${encodeURIComponent(authToken)}`);
   }
 
   @Get('status')
-  async status(
-    @Req() request: Request & { session?: { userId?: string } },
-  ): Promise<{ authenticated: boolean; expiresAt: string | null }> {
-    return this.authService.getAuthStatus(request.session?.userId ?? null);
+  async status(@Req() request: Request): Promise<{ authenticated: boolean; expiresAt: string | null }> {
+    return this.authService.getAuthStatusFromAuthHeader(request.headers.authorization);
   }
 }

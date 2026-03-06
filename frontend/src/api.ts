@@ -1,5 +1,60 @@
 import axios from 'axios';
 
+const TOKEN_KEY = 'teams_todo_auth_token';
+
+function getStoredToken(): string | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+  try {
+    return window.localStorage.getItem(TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function setStoredToken(token: string): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.localStorage.setItem(TOKEN_KEY, token);
+  } catch {
+    // ignore storage failures (private mode, strict browser policies)
+  }
+}
+
+function clearStoredToken(): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  try {
+    window.localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function consumeTokenFromUrl(): void {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get('token');
+  if (!token) {
+    return;
+  }
+
+  setStoredToken(token);
+  params.delete('token');
+
+  const nextSearch = params.toString();
+  const nextUrl = `${window.location.pathname}${nextSearch ? `?${nextSearch}` : ''}${window.location.hash}`;
+  window.history.replaceState({}, '', nextUrl);
+}
+
+consumeTokenFromUrl();
+
 export interface IncomingMessageChat {
   chatId: string;
   chatName: string;
@@ -46,8 +101,26 @@ export interface InternalTask {
 
 export const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:3000',
-  withCredentials: true,
 });
+
+api.interceptors.request.use((config) => {
+  const token = getStoredToken();
+  if (token) {
+    config.headers = config.headers ?? {};
+    (config.headers as Record<string, string>).Authorization = `Bearer ${token}`;
+  }
+  return config;
+});
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      clearStoredToken();
+    }
+    return Promise.reject(error);
+  },
+);
 
 export const endpoints = {
   authStatus: () => api.get<{ authenticated: boolean; expiresAt: string | null }>('/auth/status'),
